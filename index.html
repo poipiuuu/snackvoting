@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>🍿 Spartao Snack Vote</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+  <script>tailwind.config={theme:{extend:{fontFamily:{sans:['Inter','sans-serif']}}}}</script>
+  <style>
+    body{font-family:'Inter',sans-serif}
+    .snack-card{transition:transform .15s ease,box-shadow .15s ease,border-color .15s ease,background .15s ease}
+    .snack-card:not([disabled]):hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(249,115,22,.13)}
+    .snack-card.selected{border-color:#f97316!important;background-color:#fff7ed!important}
+    .progress-fill{transition:width .65s cubic-bezier(.4,0,.2,1)}
+    .fade-in{animation:fadeIn .3s ease both}
+    .slide-up{animation:slideUp .35s ease both}
+    @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+    @keyframes slideUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+    .vote-dot{transition:background-color .2s,transform .2s}
+    .vote-dot.filled{background-color:#f97316;transform:scale(1.12)}
+    input[type="text"]:focus,input[type="password"]:focus,select:focus{outline:none;border-color:#f97316;box-shadow:0 0 0 3px rgba(249,115,22,.15)}
+    .btn-primary{background:linear-gradient(135deg,#f97316,#ea580c);color:#fff;font-weight:700;border-radius:12px;transition:opacity .15s,transform .1s,box-shadow .15s;box-shadow:0 4px 14px rgba(249,115,22,.3)}
+    .btn-primary:hover:not(:disabled){opacity:.91;transform:translateY(-1px);box-shadow:0 6px 18px rgba(249,115,22,.35)}
+    .btn-primary:active:not(:disabled){transform:translateY(0)}
+    .btn-primary:disabled{opacity:.4;cursor:not-allowed;box-shadow:none}
+    .btn-ghost{border-radius:10px;font-weight:500;color:#6b7280;transition:background .15s,color .15s}
+    .btn-ghost:hover{background:#f3f4f6;color:#111827}
+    .glass{background:rgba(255,255,255,.85);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+    ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#fed7aa;border-radius:3px}
+  </style>
+</head>
+<body class="bg-gradient-to-br from-orange-50 via-amber-50 to-yellow-50 min-h-screen">
+<div id="app">
+  <div class="min-h-screen flex flex-col items-center justify-center gap-4 fade-in">
+    <div class="w-16 h-16 bg-gradient-to-br from-orange-400 to-amber-500 rounded-2xl flex items-center justify-center text-4xl shadow-lg shadow-orange-200 animate-bounce">🍿</div>
+    <p class="text-gray-500 font-medium">Connecting to the snack database…</p>
+  </div>
+</div>
+<script>
+const firebaseConfig = {
+  apiKey:            "AIzaSyAnNXKC0UE0gxKzDizTyCL-ETdrqkWIHRY",
+  authDomain:        "spartao-snack-vote-18c52.firebaseapp.com",
+  databaseURL:       "https://spartao-snack-vote-18c52-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId:         "spartao-snack-vote-18c52",
+  storageBucket:     "spartao-snack-vote-18c52.firebasestorage.app",
+  messagingSenderId: "420795225669",
+  appId:             "1:420795225669:web:de33d38d93d00854e9352c",
+  measurementId:     "G-LH0MN6PPQD"
+};
+
+const DB_KEY='spartaoSnackVote', VOTED_KEY='spartao_voted', MAX_VOTES=3, ADMIN_PASS='spartao2024';
+let appState=null, view='voter', adminLoggedIn=false, selected=new Set(), db=null;
+
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+const hasVoted=()=>sessionStorage.getItem(VOTED_KEY)==='true';
+const markVoted=()=>sessionStorage.setItem(VOTED_KEY,'true');
+function esc(str){const d=document.createElement('div');d.appendChild(document.createTextNode(String(str)));return d.innerHTML;}
+function isFakeConfig(){return !firebaseConfig.databaseURL||firebaseConfig.apiKey==='YOUR_API_KEY';}
+
+// Firebase returns arrays as objects {0:{...},1:{...}} — this converts them back
+function normalizeState(data){
+  if(!data) return data;
+  const cats=data.categories;
+  if(!cats){data.categories=[];return data;}
+  const catArray=Array.isArray(cats)?cats:Object.values(cats);
+  data.categories=catArray.filter(Boolean).map(cat=>{
+    const snacks=cat.snacks;
+    if(!snacks){cat.snacks=[];return cat;}
+    cat.snacks=(Array.isArray(snacks)?snacks:Object.values(snacks)).filter(Boolean);
+    return cat;
+  });
+  return data;
+}
+
+function initFirebase(){
+  if(isFakeConfig()){loadFromLocalStorage();return;}
+  const timeout=setTimeout(()=>{if(!appState)showFirebaseError('permission_denied');},8000);
+  try{
+    firebase.initializeApp(firebaseConfig);
+    db=firebase.database();
+    db.ref(DB_KEY).on('value',snapshot=>{
+      clearTimeout(timeout);
+      const data=snapshot.val();
+      if(!data){const seed=defaultState();db.ref(DB_KEY).set(seed);appState=seed;}
+      else{appState=normalizeState(data);}
+      if(view==='voter'&&hasVoted())view='results';
+      renderApp();
+    },err=>{clearTimeout(timeout);showFirebaseError(err.code||err.message);});
+  }catch(e){clearTimeout(timeout);showFirebaseError(e.message);}
+}
+
+function saveState(s){
+  appState=s;
+  if(db){db.ref(DB_KEY).set(s);}
+  else{localStorage.setItem(DB_KEY,JSON.stringify(s));renderApp();}
+}
+
+function loadFromLocalStorage(){
+  try{const raw=localStorage.getItem(DB_KEY);appState=raw?JSON.parse(raw):defaultState();if(!raw)localStorage.setItem(DB_KEY,JSON.stringify(appState));}
+  catch{appState=defaultState();}
+  if(view==='voter'&&hasVoted())view='results';
+  renderApp();
+}
+
+function defaultState(){
+  return{pollActive:true,createdAt:new Date().toISOString(),categories:[
+    {id:uid(),name:'Savory',emoji:'🧂',snacks:[{id:uid(),name:'Potato Chips',emoji:'🥔',votes:0},{id:uid(),name:'Pretzels',emoji:'🥨',votes:0},{id:uid(),name:'Popcorn',emoji:'🍿',votes:0},{id:uid(),name:'Rice Crackers',emoji:'🍘',votes:0}]},
+    {id:uid(),name:'Sweet',emoji:'🍬',snacks:[{id:uid(),name:'Chocolate Bar',emoji:'🍫',votes:0},{id:uid(),name:'Gummy Bears',emoji:'🐻',votes:0},{id:uid(),name:'Cookies',emoji:'🍪',votes:0},{id:uid(),name:'Fruit Snacks',emoji:'🍓',votes:0}]},
+    {id:uid(),name:'Healthy',emoji:'🥗',snacks:[{id:uid(),name:'Mixed Nuts',emoji:'🥜',votes:0},{id:uid(),name:'Granola Bar',emoji:'🌾',votes:0},{id:uid(),name:'Dried Mango',emoji:'🥭',votes:0},{id:uid(),name:'Rice Cakes',emoji:'🍚',votes:0}]},
+    {id:uid(),name:'Drinks',emoji:'☕',snacks:[{id:uid(),name:'Coffee Pods',emoji:'☕',votes:0},{id:uid(),name:'Sparkling Water',emoji:'💧',votes:0},{id:uid(),name:'Fruit Juice',emoji:'🧃',votes:0},{id:uid(),name:'Herbal Tea',emoji:'🍵',votes:0}]},
+  ]};
+}
+
+const totalVotes=s=>s.categories.flatMap(c=>c.snacks).reduce((a,x)=>a+x.votes,0);
+const maxVotes=s=>Math.max(0,...s.categories.flatMap(c=>c.snacks).map(x=>x.votes));
+const allSnacks=s=>s.categories.flatMap(c=>c.snacks.map(x=>({...x,catName:c.name,catEmoji:c.emoji})));
+
+function renderApp(){
+  if(!appState)return;
+  document.getElementById('app').innerHTML=({voter:renderVoter,results:renderResults,admin:()=>adminLoggedIn?renderAdminDash():renderAdminLogin()}[view]??renderVoter)();
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+const nav=v=>{view=v;renderApp();};
+
+function showFirebaseError(code){
+  const isRules=!code||code.includes('permission')||code.includes('denied');
+  document.getElementById('app').innerHTML=`<div class="min-h-screen flex items-center justify-center px-4"><div class="bg-white rounded-3xl shadow-xl border border-red-100 p-8 w-full max-w-lg fade-in"><div class="text-center mb-6"><div class="text-5xl mb-3">${isRules?'🔒':'⚠️'}</div><h2 class="text-2xl font-extrabold text-gray-800">${isRules?'Database Access Blocked':'Connection Error'}</h2></div>${isRules?`<div class="bg-orange-50 border border-orange-200 rounded-2xl p-5 mb-6"><ol class="space-y-2 text-sm text-gray-700"><li><span class="font-bold text-orange-500">1.</span> Go to <a href="https://console.firebase.google.com" target="_blank" class="text-orange-500 underline">console.firebase.google.com</a></li><li><span class="font-bold text-orange-500">2.</span> Realtime Database → Rules tab</li><li><span class="font-bold text-orange-500">3.</span> Set rules to: <pre class="bg-gray-900 text-green-400 rounded-xl p-3 mt-2 text-xs">{\n  "rules":{\n    ".read":true,\n    ".write":true\n  }\n}</pre></li><li><span class="font-bold text-orange-500">4.</span> Click Publish → reload ✅</li></ol></div>`:`<div class="bg-red-50 border border-red-200 rounded-xl p-4 mb-6 text-sm text-red-700 font-mono">${esc(code)}</div>`}<button onclick="location.reload()" class="btn-primary w-full py-3">🔄 Reload Page</button></div></div>`;
+}
+
+function renderVoter(){
+  const state=appState,left=MAX_VOTES-selected.size,total=state.categories.flatMap(c=>c.snacks).length;
+  const dots=[0,1,2].map(i=>`<span class="vote-dot w-7 h-7 rounded-full border-2 flex items-center justify-center text-xs font-bold ${i<selected.size?'filled border-orange-500 text-white':'border-gray-300 text-gray-300'}">${i<selected.size?'✓':''}</span>`).join('');
+  const cats=state.categories.map(cat=>{
+    if(!cat.snacks||!cat.snacks.length)return'';
+    const cards=cat.snacks.map(snack=>{
+      const isSel=selected.has(snack.id),isLock=!isSel&&selected.size>=MAX_VOTES;
+      return `<button class="snack-card w-full text-left p-4 rounded-2xl border-2 bg-white ${isSel?'selected shadow-md':''} ${isLock?'opacity-40 cursor-not-allowed border-gray-200':'border-gray-200 cursor-pointer'}" onclick="${isLock?'':'toggleSnack(\''+snack.id+'\')'}" ${isLock?'disabled':''}><div class="flex items-center gap-3"><span class="text-3xl leading-none">${snack.emoji}</span><span class="flex-1 font-semibold text-gray-800">${esc(snack.name)}</span><span class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold transition-all ${isSel?'bg-orange-500 text-white scale-110':'bg-gray-100 text-gray-300'}">${isSel?'✓':'○'}</span></div></button>`;
+    }).join('');
+    return`<div class="mb-8 slide-up"><div class="flex items-center gap-2 mb-3"><span class="text-2xl">${cat.emoji}</span><h2 class="text-lg font-bold text-gray-700">${esc(cat.name)}</h2><span class="text-xs font-semibold bg-orange-100 text-orange-600 rounded-full px-2 py-0.5">${cat.snacks.length}</span></div><div class="grid grid-cols-1 sm:grid-cols-2 gap-3">${cards}</div></div>`;
+  }).join('');
+  return`<div class="min-h-screen">${header()}<main class="max-w-3xl mx-auto px-4 py-8"><div class="text-center mb-8 fade-in"><h2 class="text-3xl font-extrabold text-gray-800">What should we restock? 🛒</h2><p class="text-gray-500 mt-2">Pick up to <strong class="text-orange-500">${MAX_VOTES} snacks</strong> you'd love to see in the pantry</p></div><div class="bg-white rounded-2xl shadow-sm border border-orange-100 p-4 mb-8 fade-in flex flex-wrap items-center justify-between gap-4"><div class="flex items-center gap-3"><div class="flex gap-1.5">${dots}</div><span class="text-gray-500 text-sm">${selected.size===0?'Select your favorites below':'<strong>'+left+'</strong> vote'+(left!==1?'s':'')+' remaining'}</span></div><button onclick="submitVote()" class="btn-primary px-6 py-2.5" ${selected.size===0?'disabled':''}>🗳️ Submit Vote</button></div>${total?cats:'<div class="text-center py-20 fade-in"><div class="text-7xl mb-4">🫙</div><p class="text-gray-400 text-lg font-semibold">Pantry is empty!</p></div>'}</main>${footer()}</div>`;
+}
+
+function renderResults(){
+  const state=appState,total=totalVotes(state),top=maxVotes(state),medals=['🥇','🥈','🥉'];
+  const top3=allSnacks(state).sort((a,b)=>b.votes-a.votes).filter(s=>s.votes>0).slice(0,3);
+  const podiumHTML=top3.length?`<div class="bg-gradient-to-r from-orange-500 to-amber-400 rounded-2xl p-6 mb-6 text-white shadow-lg shadow-orange-200 slide-up"><h3 class="font-bold text-lg mb-4">🏆 Leading the pantry poll</h3><div class="space-y-3">${top3.map((s,i)=>`<div class="flex items-center gap-3 bg-white/20 backdrop-blur rounded-xl px-4 py-3"><span class="text-2xl">${medals[i]}</span><span class="text-2xl">${s.emoji}</span><div class="flex-1 min-w-0"><p class="font-bold truncate">${esc(s.name)}</p><p class="text-orange-100 text-xs">${esc(s.catName)}</p></div><span class="font-extrabold text-xl">${s.votes}</span></div>`).join('')}</div></div>`:'';
+  const catsHTML=state.categories.map(cat=>{
+    if(!cat.snacks||!cat.snacks.length)return'';
+    const rows=[...cat.snacks].sort((a,b)=>b.votes-a.votes).map(snack=>{
+      const pct=top>0?Math.round((snack.votes/top)*100):0,isTop=snack.votes===top&&top>0;
+      return`<div class="flex items-center gap-3 p-3 rounded-xl ${isTop?'bg-orange-50':'bg-gray-50'}"><span class="text-2xl leading-none">${snack.emoji}</span><div class="flex-1 min-w-0"><div class="flex justify-between items-center mb-1.5"><span class="font-semibold text-gray-800 text-sm truncate">${esc(snack.name)}</span><span class="ml-2 font-bold text-sm whitespace-nowrap ${isTop?'text-orange-500':'text-gray-400'}">${snack.votes} ${snack.votes===1?'vote':'votes'}${isTop&&snack.votes>0?' 🏆':''}</span></div><div class="w-full bg-gray-200 rounded-full h-2"><div class="progress-fill h-2 rounded-full ${isTop?'bg-gradient-to-r from-orange-400 to-orange-500':'bg-orange-300'}" style="width:${pct}%"></div></div></div></div>`;
+    }).join('');
+    return`<div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 mb-4 slide-up"><div class="flex items-center gap-2 mb-4"><span class="text-xl">${cat.emoji}</span><h3 class="font-bold text-gray-700">${esc(cat.name)}</h3></div><div class="space-y-2">${rows}</div></div>`;
+  }).join('');
+  return`<div class="min-h-screen">${header()}<main class="max-w-3xl mx-auto px-4 py-8"><div class="text-center mb-8 fade-in"><div class="text-5xl mb-3">📊</div><h2 class="text-2xl font-extrabold text-gray-800">Live Results</h2><p class="mt-2"><span class="text-sm font-semibold bg-orange-100 text-orange-600 rounded-full px-3 py-1">${total} total vote${total!==1?'s':''} cast</span></p>${hasVoted()?'<p class="text-green-600 font-semibold text-sm mt-3">🎉 Your votes have been counted — thanks!</p>':''}</div>${podiumHTML}${catsHTML}${!hasVoted()?'<div class="text-center mt-6"><button onclick="nav(\'voter\')" class="btn-primary px-8 py-3">🗳️ Cast Your Vote</button></div>':''}</main>${footer()}</div>`;
+}
+
+function renderAdminLogin(){
+  return`<div class="min-h-screen flex items-center justify-center px-4"><div class="bg-white rounded-3xl shadow-xl border border-gray-100 p-8 w-full max-w-sm fade-in"><div class="text-center mb-8"><div class="w-16 h-16 bg-gradient-to-br from-orange-400 to-amber-500 rounded-2xl flex items-center justify-center text-3xl mx-auto mb-4 shadow-lg shadow-orange-200">🔐</div><h2 class="text-2xl font-extrabold text-gray-800">Admin Access</h2><p class="text-gray-400 text-sm mt-1">Spartao Oy · Poll Management</p></div><div id="loginErr" class="hidden mb-4 bg-red-50 border border-red-200 text-red-600 rounded-xl px-4 py-3 text-sm text-center"></div><input type="password" id="adminPwd" placeholder="Enter admin password" class="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-gray-800 mb-4" onkeydown="if(event.key==='Enter')tryLogin()" /><button onclick="tryLogin()" class="btn-primary w-full py-3 mb-2">Login →</button><button onclick="nav('voter')" class="btn-ghost w-full py-2 text-sm">← Back to voting</button></div></div>`;
+}
+
+function renderAdminDash(){
+  const state=appState,snacks=state.categories.flatMap(c=>c.snacks),total=totalVotes(state);
+  const stats=[{icon:'📂',val:state.categories.length,lbl:'Categories'},{icon:'🍿',val:snacks.length,lbl:'Snack Items'},{icon:'🗳️',val:total,lbl:'Total Votes'},{icon:state.pollActive?'🟢':'🔴',val:state.pollActive?'Active':'Closed',lbl:'Poll Status'}].map(s=>`<div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 text-center"><div class="text-3xl mb-1">${s.icon}</div><div class="text-2xl font-extrabold text-gray-800">${s.val}</div><div class="text-gray-400 text-xs mt-0.5">${s.lbl}</div></div>`).join('');
+  const catOpts=state.categories.map(c=>`<option value="${c.id}">${c.emoji} ${esc(c.name)}</option>`).join('');
+  const listHTML=!state.categories.length?`<div class="text-center py-10 text-gray-400">No categories yet!</div>`:state.categories.map(cat=>{
+    const rows=!cat.snacks||!cat.snacks.length?`<p class="text-gray-300 text-sm italic px-2 py-2">No snacks yet</p>`:cat.snacks.map(s=>`<div class="flex items-center gap-3 py-2.5 border-b border-gray-50 last:border-0"><span class="text-xl">${s.emoji}</span><span class="flex-1 text-sm font-medium text-gray-700">${esc(s.name)}</span><span class="text-xs font-semibold bg-orange-50 text-orange-500 rounded-full px-2 py-0.5">${s.votes} votes</span><button onclick="deleteSnack('${cat.id}','${s.id}')" class="text-red-300 hover:text-red-500 hover:bg-red-50 rounded-lg px-2 py-1 text-sm transition-colors">🗑️</button></div>`).join('');
+    return`<div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 mb-4"><div class="flex items-center justify-between mb-3"><div class="flex items-center gap-2"><span class="text-xl">${cat.emoji}</span><span class="font-bold text-gray-800">${esc(cat.name)}</span><span class="text-xs bg-gray-100 text-gray-400 rounded-full px-2 py-0.5 font-semibold">${cat.snacks?cat.snacks.length:0}</span></div><button onclick="deleteCat('${cat.id}')" class="text-xs text-red-400 hover:text-red-600 border border-red-100 hover:bg-red-50 px-3 py-1 rounded-lg transition-colors">Delete</button></div>${rows}</div>`;
+  }).join('');
+  return`<div class="min-h-screen">${header(true)}<main class="max-w-3xl mx-auto px-4 py-8"><div class="fade-in"><div class="flex items-center justify-between mb-6"><h2 class="text-2xl font-extrabold text-gray-800">⚙️ Admin Dashboard</h2><button onclick="doLogout()" class="btn-ghost px-3 py-1.5 text-sm">Logout →</button></div><div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">${stats}</div><div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 mb-6"><h3 class="font-bold text-gray-800 mb-4">🎛️ Poll Actions</h3><div class="flex flex-wrap gap-3"><button onclick="doReset()" class="bg-red-500 hover:bg-red-600 text-white font-bold px-5 py-2.5 rounded-xl transition-colors">🔄 Reset All Votes</button><button onclick="doCopyLink()" class="bg-blue-500 hover:bg-blue-600 text-white font-bold px-5 py-2.5 rounded-xl transition-colors">🔗 Copy Share Link</button><button onclick="doTogglePoll()" class="text-white font-bold px-5 py-2.5 rounded-xl transition-colors ${state.pollActive?'bg-gray-500 hover:bg-gray-600':'bg-green-500 hover:bg-green-600'}">${state.pollActive?'⏸️ Close Poll':'▶️ Open Poll'}</button></div><div id="actionMsg" class="hidden mt-3 text-green-600 font-semibold text-sm"></div></div><div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 mb-6"><h3 class="font-bold text-gray-800 mb-4">➕ Add Category</h3><div class="flex gap-3 flex-wrap"><input type="text" id="newCatEmoji" placeholder="Emoji" maxlength="2" class="border-2 border-gray-200 rounded-xl px-3 py-2.5 w-20 text-center text-xl"/><input type="text" id="newCatName" placeholder="Category name (e.g. Savory)" class="border-2 border-gray-200 rounded-xl px-4 py-2.5 flex-1 min-w-40" onkeydown="if(event.key==='Enter')addCategory()"/><button onclick="addCategory()" class="btn-primary px-6 py-2.5">Add</button></div><p class="text-gray-400 text-xs mt-2">💡 Paste a single emoji in the first box</p></div><div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 mb-8"><h3 class="font-bold text-gray-800 mb-4">🍫 Add Snack Item</h3>${!state.categories.length?'<p class="text-gray-400 text-sm">Add a category first.</p>':`<div class="flex gap-3 flex-wrap"><select id="newSnackCat" class="border-2 border-gray-200 rounded-xl px-3 py-2.5 sm:w-44">${catOpts}</select><input type="text" id="newSnackEmoji" placeholder="Emoji" maxlength="2" class="border-2 border-gray-200 rounded-xl px-3 py-2.5 w-20 text-center text-xl"/><input type="text" id="newSnackName" placeholder="Snack name (e.g. Popcorn)" class="border-2 border-gray-200 rounded-xl px-4 py-2.5 flex-1 min-w-40" onkeydown="if(event.key==='Enter')addSnack()"/><button onclick="addSnack()" class="btn-primary px-6 py-2.5">Add</button></div>`}</div><h3 class="font-bold text-gray-700 text-lg mb-4">📋 Current Snacks</h3>${listHTML}</div></main>${footer()}</div>`;
+}
+
+function header(isAdmin=false){
+  const active=v=>view===v?'bg-orange-50 !text-orange-600 font-semibold':'';
+  return`<header class="glass sticky top-0 z-20 border-b border-orange-100/60 shadow-sm"><div class="max-w-3xl mx-auto px-4 py-3.5 flex items-center justify-between"><button onclick="nav(hasVoted()?'results':'voter')" class="flex items-center gap-3"><div class="w-9 h-9 bg-gradient-to-br from-orange-400 to-amber-500 rounded-xl flex items-center justify-center text-xl shadow-md shadow-orange-200">🍿</div><div class="text-left"><p class="font-extrabold text-gray-800 text-base leading-tight">Snack Vote</p><p class="text-orange-500 text-xs font-bold">Spartao Oy</p></div></button><nav class="flex items-center gap-1">${isAdmin?`<button onclick="nav('voter')" class="btn-ghost px-3 py-2 text-sm">🗳️ Voter View</button>`:`<button onclick="nav('voter')" class="btn-ghost px-3 py-2 text-sm ${active('voter')}">🗳️ Vote</button><button onclick="nav('results')" class="btn-ghost px-3 py-2 text-sm ${active('results')}">📊 Results</button><button onclick="nav('admin')" class="btn-ghost px-3 py-2 text-sm ${active('admin')}">⚙️ Admin</button>`}</nav></div></header>`;
+}
+
+function footer(){
+  return`<footer class="mt-16 py-10 text-center text-gray-400 text-xs"><p>🍿 <strong>Spartao Oy</strong> Snack Vote · Helping the team eat well</p><p class="mt-1 text-gray-300">Powered by Firebase · Votes sync live across all devices</p></footer>`;
+}
+
+function toggleSnack(id){selected.has(id)?selected.delete(id):selected.size<MAX_VOTES&&selected.add(id);renderApp();}
+function submitVote(){if(!selected.size)return;const state=JSON.parse(JSON.stringify(appState));state.categories.forEach(c=>c.snacks.forEach(s=>{if(selected.has(s.id))s.votes++;}));saveState(state);markVoted();selected.clear();view='results';if(!db)renderApp();}
+function tryLogin(){const pwd=document.getElementById('adminPwd')?.value;if(pwd===ADMIN_PASS){adminLoggedIn=true;view='admin';renderApp();}else{const el=document.getElementById('loginErr');if(el){el.textContent='Incorrect password.';el.classList.remove('hidden');}}}
+const doLogout=()=>{adminLoggedIn=false;nav('voter');};
+function addCategory(){const name=document.getElementById('newCatName')?.value.trim(),emoji=document.getElementById('newCatEmoji')?.value.trim()||'📦';if(!name)return alert('Please enter a category name.');const state=JSON.parse(JSON.stringify(appState));state.categories.push({id:uid(),name,emoji,snacks:[]});saveState(state);if(!db)renderApp();}
+function addSnack(){const catId=document.getElementById('newSnackCat')?.value,name=document.getElementById('newSnackName')?.value.trim(),emoji=document.getElementById('newSnackEmoji')?.value.trim()||'🍬';if(!name)return alert('Please enter a snack name.');const state=JSON.parse(JSON.stringify(appState)),cat=state.categories.find(c=>c.id===catId);if(cat){cat.snacks.push({id:uid(),name,emoji,votes:0});saveState(state);}if(!db)renderApp();}
+function deleteCat(catId){if(!confirm('Delete this category and all its snacks?'))return;const state=JSON.parse(JSON.stringify(appState));state.categories=state.categories.filter(c=>c.id!==catId);saveState(state);if(!db)renderApp();}
+function deleteSnack(catId,snackId){if(!confirm('Remove this snack?'))return;const state=JSON.parse(JSON.stringify(appState)),cat=state.categories.find(c=>c.id===catId);if(cat){cat.snacks=cat.snacks.filter(s=>s.id!==snackId);saveState(state);}if(!db)renderApp();}
+function doReset(){if(!confirm('Reset ALL votes to zero? This cannot be undone.'))return;const state=JSON.parse(JSON.stringify(appState));state.categories.forEach(c=>c.snacks.forEach(s=>{s.votes=0;}));saveState(state);sessionStorage.removeItem(VOTED_KEY);if(!db)renderApp();setTimeout(()=>flash('✅ All votes have been reset!'),60);}
+function doTogglePoll(){const state=JSON.parse(JSON.stringify(appState));state.pollActive=!state.pollActive;saveState(state);if(!db)renderApp();}
+function doCopyLink(){const url=location.href.split('?')[0].split('#')[0];navigator.clipboard.writeText(url).then(()=>flash('✅ Shareable link copied!')).catch(()=>prompt('Copy this link:',url));}
+function flash(msg){const el=document.getElementById('actionMsg');if(!el)return;el.textContent=msg;el.classList.remove('hidden');setTimeout(()=>el.classList.add('hidden'),3500);}
+
+initFirebase();
+</script>
+</body>
+</html>
